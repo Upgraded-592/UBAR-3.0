@@ -1,6 +1,0 @@
-Using launch settings from Ubar 3.0\Properties\launchSettings.json...
-C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\FlyoutHost.cs(103,50): warning CS8604: Possible null reference argument for parameter 'barAnchor' in 'Point? FlyoutHost.ComputeScreenPoint(FrameworkElement barAnchor, Point? pointInAnchor)'. [C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\Ubar 3.0.csproj]
-C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\FlyoutHost.cs(143,13): warning CS8602: Dereference of a possibly null reference. [C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\Ubar 3.0.csproj]
-C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\MusicModule.cs(47,18): warning CS0169: The field 'MusicModule._musicFlyoutOpen' is never used [C:\Users\utkar.HRUDAYA\Projects\UBAR\ubar Modern\Ubar 3.0\Ubar 3.0.csproj]
-[Music Debug] Adding title to textpanel
-Same thing but artist
