@@ -1,0 +1,17 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="ARM32" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="Ubar 3.0/Ubar 3.0.csproj">
+    <Platform Solution="*|ARM32" Project="ARM32" />
+    <Platform Solution="*|x64" Project="x64" />
+    <Platform Solution="Debug|Any CPU" Project="ARM64" />
+    <Deploy Solution="*|ARM32" />
+    <Deploy Solution="*|x64" />
+  </Project>
+  <Project Path="UbarShared/UbarShared.csproj">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>

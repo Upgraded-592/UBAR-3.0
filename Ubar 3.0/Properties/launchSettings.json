@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "BibbleBobbleApp (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "BibbleBobbleApp (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

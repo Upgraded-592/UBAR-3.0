@@ -1,0 +1,7 @@
+{
+    "cmake.ignoreCMakeListsMissing": true,
+    "AllAutocomplete.showCurrentDocument": true,
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "C_Cpp.errorSquiggles": "enabled",
+    "C_Cpp.default.compilerPath": "cl.exe"
+}

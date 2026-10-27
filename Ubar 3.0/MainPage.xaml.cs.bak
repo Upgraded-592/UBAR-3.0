@@ -1,0 +1,506 @@
+private static void SafeLog(string message)
+    {
+        try
+        {
+            // Use app's local app data folder which is guaranteed to be writable in packaged apps
+            var logPath = Path.Combine(Windows.Storage.ApplicationData.Current.LocalFolder.Path, "UBAR", "ubar_debug_trace.log");
+            var dir = Path.GetDirectoryName(logPath);
+            if (dir != null && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.AppendAllText(logPath, message);
+            System.Diagnostics.Debug.WriteLine($"SAFELOG: {message.TrimEnd()}");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"SafeLog failed: {ex.Message}");
+        }
+    }
+
+    // Test log at startup
+    static MainPage()
+    {
+        try
+        {
+            var logPath = Path.Combine(Windows.Storage.ApplicationData.Current.LocalFolder.Path, "UBAR", "ubar_debug_trace.log");
+            var dir = Path.GetDirectoryName(logPath);
+            if (dir != null && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] MainPage static constructor called\r\n");
+            System.Diagnostics.Debug.WriteLine("MainPage static constructor called");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Static constructor failed: {ex.Message}");
+        }
+    }
+
+    // Fullscreen detection
+    private bool _isHiddenForFullscreen;
+    private IntPtr _barHwnd = IntPtr.Zero;
+    private readonly DispatcherTimer _fullscreenTimer;
+
+    private bool _isBuildingModules;
+
+    // Launcher apps (owned here because the configure-apps dialog lives here)
+    private readonly List<LauncherApp> _launcherApps = new();
+
+    public MainPage()
+    {
+        InitializeComponent();
+
+        // Test log immediately in constructor
+        try
+        {
+            var logPath = Path.Combine(Windows.Storage.ApplicationData.Current.LocalFolder.Path, "UBAR", "ubar_debug_trace.log");
+            var dir = Path.GetDirectoryName(logPath);
+            if (dir != null && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] MainPage constructor called\r\n");
+        }
+        catch { }
+
+        LoadLauncherApps();
+
+        // Get HWND for fullscreen detection - defer until window is available
+        _barHwnd = IntPtr.Zero;
+        Loaded += (_, _) =>
+        {
+            try
+            {
+                if (App.MainWindowInstance != null)
+                {
+                    _barHwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance);
+                }
+            }
+            catch (Exception ex)
+            {
+                SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] [MainPage] Failed to get window handle: {ex.Message}");
+            }
+        };
+
+        // Wire module layout rebuilds
+        App.Modules.LayoutChanged += BuildModules;
+
+        // Build initial layout
+        BuildModules();
+
+        // Fullscreen-check timer (every 1 s, lightweight)
+        _fullscreenTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _fullscreenTimer.Tick += (s, e) => CheckFullscreenAndToggleBar();
+        _fullscreenTimer.Start();
+    }
+
+    // =====================================================================
+    //  Module layout building
+    // =====================================================================
+
+    private void BuildModules()
+    {
+        if (_isBuildingModules) return;
+        _isBuildingModules = true;
+        SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules START, LeftSlot={LeftSlot.Children.Count}, CenterSlot={CenterSlot.Children.Count}, RightSlot={RightSlot.Children.Count}\n");
+
+        try
+        {
+            var sorted = App.Modules.Slots
+                .Where(s => s.IsVisible)
+                .OrderBy(s => s.Order)
+                .ToList();
+            SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules sorted count={sorted.Count}: {string.Join(", ", sorted.Select(s => $"{s.Module.Id}(O={s.Order},A={s.Alignment})"))}\n");
+
+            LeftSlot.Children.Clear();
+            CenterSlot.Children.Clear();
+            RightSlot.Children.Clear();
+            SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules panels cleared\n");
+
+            foreach (var slot in sorted)
+            {
+                var view = WrapModuleForLayout(slot);
+                SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules WrapModuleForLayout returned {view.GetType().Name} for {slot.Module.Id}\n");
+
+                var panel = slot.Alignment switch
+                {
+                    ModuleAlignment.Left   => LeftSlot,
+                    ModuleAlignment.Center => CenterSlot,
+                    _                     => RightSlot,
+                };
+                panel.Children.Add(view);
+                SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules Added {slot.Module.Id} to {panel.Name}, panel children={panel.Children.Count}\n");
+            }
+            SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules END, LeftSlot={LeftSlot.Children.Count}, CenterSlot={CenterSlot.Children.Count}, RightSlot={RightSlot.Children.Count}\n");
+        }
+        catch (Exception ex)
+        {
+            SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] BuildModules EXCEPTION: {ex}\n");
+            throw;
+        }
+        finally
+        {
+            _isBuildingModules = false;
+        }
+    }
+
+    private FrameworkElement WrapModuleForLayout(ModuleSlot slot)
+    {
+        var view = slot.GetView();
+        SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] [WrapModuleForLayout] {slot.Module.Id}: view={view.GetType().Name}, view.Parent={view.Parent?.GetType().Name ?? "null"}");
+
+        // Remove view from old parent if necessary
+        if (view.Parent is Panel oldParent)
+        {
+            SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] [WrapModuleForLayout] {slot.Module.Id}: Removing view from old parent {oldParent.GetType().Name}");
+            oldParent.Children.Remove(view);
+        }
+        // Clear any attached properties that may have been set by a Grid parent
+        view.ClearValue(Grid.ColumnProperty);
+        view.ClearValue(Grid.RowProperty);
+        view.ClearValue(Canvas.LeftProperty);
+        view.ClearValue(Canvas.TopProperty);
+        view.ClearValue(Canvas.ZIndexProperty);
+
+        // In normal mode, just return the view directly with context menu
+        view.ContextFlyout = BuildModuleContextMenu(slot);
+        return view;
+    }
+
+    // =====================================================================
+    //  Module context menus
+    // =====================================================================
+
+    private MenuFlyout BuildModuleContextMenu(ModuleSlot slot)
+    {
+        var flyout = new MenuFlyout();
+
+        // Header
+        flyout.Items.Add(new MenuFlyoutItem { Text = slot.Module.DisplayName, IsEnabled = false });
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        // Hide
+        var hide = new MenuFlyoutItem
+        {
+            Text = "Hide",
+            Icon = new FontIcon { Glyph = "\uED1A", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") },
+        };
+        hide.Click += (s, e) => App.Modules.Disable(slot.Module.Id);
+        flyout.Items.Add(hide);
+
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        // Move to
+        var moveItem = new MenuFlyoutSubItem { Text = "Move to", Icon = new FontIcon { Glyph = "\uE75B", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") } };
+        foreach (var zone in new[] { ModuleAlignment.Left, ModuleAlignment.Center, ModuleAlignment.Right })
+        {
+            var z = zone;
+            var mi = new MenuFlyoutItem { Text = zone.ToString() };
+            mi.Click += (s, e) => App.Modules.MoveToZone(slot.Module.Id, z);
+            moveItem.Items.Add(mi);
+        }
+        flyout.Items.Add(moveItem);
+
+        // Reorder
+        var reorder = new MenuFlyoutSubItem { Text = "Reorder", Icon = new FontIcon { Glyph = "\uE8CB", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") } };
+        var shiftLeft = new MenuFlyoutItem { Text = "Shift Left" };
+        shiftLeft.Click += (s, e) => App.Modules.ShiftLeft(slot.Module.Id);
+        reorder.Items.Add(shiftLeft);
+        var shiftRight = new MenuFlyoutItem { Text = "Shift Right" };
+        shiftRight.Click += (s, e) => App.Modules.ShiftRight(slot.Module.Id);
+        reorder.Items.Add(shiftRight);
+        flyout.Items.Add(reorder);
+
+        // Launcher-specific: configure apps
+        if (slot.Module is LauncherModule)
+        {
+            flyout.Items.Add(new MenuFlyoutSeparator());
+            var cfg = new MenuFlyoutItem { Text = "Configure Apps", Icon = new FontIcon { Glyph = "\uE713", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") } };
+            cfg.Click += (s, e) => ShowConfigureAppsDialog();
+            flyout.Items.Add(cfg);
+        }
+
+        return flyout;
+    }
+
+    // Bar background context flyout
+    private void OnBarContextFlyoutOpening(object sender, object e)
+    {
+        SafeLog($"[{DateTime.Now:HH:mm:ss}] OnBarContextFlyoutOpening called\r\n");
+        BarContextFlyout.Items.Clear();
+
+        BarContextFlyout.Items.Add(new MenuFlyoutItem { Text = "Modules", IsEnabled = false });
+        BarContextFlyout.Items.Add(new MenuFlyoutSeparator());
+
+        foreach (var slot in App.Modules.Slots)
+        {
+            var s = slot;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = slot.Module.DisplayName,
+                IsChecked = slot.IsVisible,
+                Icon = new FontIcon { Glyph = slot.Module.Glyph, FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") },
+            };
+            item.Click += (_, _) =>
+            {
+                if (s.IsVisible) App.Modules.Disable(s.Module.Id);
+                else App.Modules.Enable(s.Module.Id);
+            };
+            BarContextFlyout.Items.Add(item);
+        }
+
+        BarContextFlyout.Items.Add(new MenuFlyoutSeparator());
+
+        var resetItem = new MenuFlyoutItem { Text = "Reset Layout to Default" };
+        resetItem.Click += (s, ev) => ResetLayout();
+        BarContextFlyout.Items.Add(resetItem);
+
+        var showAll = new MenuFlyoutItem { Text = "Show All Modules" };
+        showAll.Click += (s, ev) =>
+        {
+            foreach (var slot in App.Modules.Slots)
+                if (!slot.IsVisible) App.Modules.Enable(slot.Module.Id);
+        };
+        BarContextFlyout.Items.Add(showAll);
+
+        BarContextFlyout.Items.Add(new MenuFlyoutSeparator());
+
+        // Settings - launches external Settings app
+        var settingsItem = new MenuFlyoutItem
+        {
+            Text = "Settings",
+            Icon = new FontIcon { Glyph = "\uE713", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") }
+        };
+        settingsItem.Click += async (s, ev) =>
+        {
+            SafeLog($"[{DateTime.Now:HH:mm:ss}] Settings menu clicked\r\n");
+            await LaunchSettingsAsync();
+        };
+
+        BarContextFlyout.Items.Add(settingsItem);
+    }
+
+    private void RootBar_RightTapped(object sender, Microsoft.UI.Xaml.Input.RightTappedRoutedEventArgs e)
+    {
+        SafeLog($"[{DateTime.Now:HH:mm:ss}] RootBar_RightTapped called\r\n");
+        var point = e.GetPosition(RootBar);
+        BarContextFlyout.ShowAt(RootBar, point);
+        e.Handled = true;
+    }
+
+    private static async System.Threading.Tasks.Task LaunchSettingsAsync()
+    {
+        try
+        {
+            // Find the Settings executable relative to the current process
+            string currentDir = AppContext.BaseDirectory;
+
+            // Try multiple locations where UbarSettings.exe might be
+            var processPath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+            string[] possiblePaths = new[]
+            {
+                // 1. Next to the main exe (for unpackaged/debug)
+                Path.Combine(currentDir, "UbarSettings.exe"),
+                // 2. In the build output directory (for debug)
+                Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\UbarSettings\bin\Debug\net9.0-windows10.0.19041\win-x64\UbarSettings.exe")),
+                // 3. Release build output
+                Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\UbarSettings\bin\Release\net9.0-windows10.0.19041\win-x64\UbarSettings.exe")),
+                // 4. In the AppX folder (for packaged app)
+                Path.Combine(currentDir, "UbarSettings.exe"),
+                // 5. In the same directory as the main exe
+                processPath != null ? Path.Combine(Path.GetDirectoryName(processPath), "UbarSettings.exe") : "",
+            };
+
+            string settingsExe = null;
+            foreach (var path in possiblePaths)
+            {
+                if (File.Exists(path))
+                {
+                    settingsExe = path;
+                    break;
+                }
+            }
+
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"[{DateTime.Now:HH:mm:ss}] LaunchSettingsAsync: currentDir={currentDir}, found={settingsExe}\r\n");
+
+            if (settingsExe != null)
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = settingsExe,
+                    UseShellExecute = true,
+                };
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"[{DateTime.Now:HH:mm:ss}] Starting process: {settingsExe}\r\n");
+                var process = Process.Start(psi);
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"[{DateTime.Now:HH:mm:ss}] Process.Start returned: {process != null}\r\n");
+            }
+            else
+            {
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"[{DateTime.Now:HH:mm:ss}] Settings executable not found in any of these locations:\r\n");
+                foreach (var path in possiblePaths)
+                {
+                    File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"  {path} - Exists: {File.Exists(path)}\r\n");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "ubar_debug_trace.log"), $"[{DateTime.Now:HH:mm:ss}] Failed to launch Settings: {ex.Message}\r\n");
+        }
+    }
+
+    private void ResetLayout()
+    {
+        // Re-enable all, reset to default alignment/order
+        foreach (var slot in App.Modules.Slots)
+        {
+            slot.Alignment = slot.Module.DefaultAlignment;
+            slot.Order = slot.Module.DefaultOrder;
+            slot.IsVisible = true;
+            if (!slot.IsEnabled && !slot.IsFaulted) slot.Enable();
+        }
+        BuildModules();
+        App.Modules.ReorderCommit();
+    }
+
+    // =====================================================================
+    //  Launcher apps
+    // =====================================================================
+
+    private void LoadLauncherApps()
+    {
+        var saved = LauncherAppService.LoadApps();
+        if (saved != null && saved.Count > 0)
+        {
+            _launcherApps.Clear();
+            _launcherApps.AddRange(LauncherAppService.MergeWithDefaults(saved));
+        }
+        else
+        {
+            _launcherApps.Clear();
+            _launcherApps.AddRange(LauncherAppDefaults.CreateDefaultApps());
+        }
+    }
+
+    private async void ShowConfigureAppsDialog()
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Configure App Launcher",
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        var panel = new StackPanel { Spacing = 12, Width = 480 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Apps in launcher (uncheck to hide):",
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+        });
+
+        var appsList = new ListView { SelectionMode = ListViewSelectionMode.None, Height = 220 };
+        var rows = new List<(CheckBox cb, TextBox name, TextBox glyph, TextBox cmd, TextBox args, LauncherApp app)>();
+
+        void Rebuild()
+        {
+            appsList.Items.Clear();
+            rows.Clear();
+            foreach (var app in _launcherApps)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                var cb    = new CheckBox { IsChecked = app.IsVisible, VerticalAlignment = VerticalAlignment.Center };
+                var name  = new TextBox { Text = app.DisplayName,  PlaceholderText = "Name",    Width = 120 };
+                var glyph = new TextBox { Text = app.Glyph,        PlaceholderText = "Glyph",   Width = 70  };
+                var cmd   = new TextBox { Text = app.Command,      PlaceholderText = "Command", Width = 130 };
+                var args  = new TextBox { Text = app.Arguments,    PlaceholderText = "Args",    Width = 80  };
+                var rem   = new Button  { Content = new FontIcon { Glyph = "\uE74D", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") }, Background = null, BorderThickness = new Thickness(0) };
+                var cur = app;
+                rem.Click += (s, e) => { _launcherApps.Remove(cur); Rebuild(); };
+                row.Children.Add(cb);
+                row.Children.Add(name);
+                row.Children.Add(glyph);
+                row.Children.Add(cmd);
+                row.Children.Add(args);
+                row.Children.Add(rem);
+                appsList.Items.Add(row);
+                rows.Add((cb, name, glyph, cmd, args, app));
+            }
+        }
+        Rebuild();
+        panel.Children.Add(appsList);
+
+        var addBtn = new Button();
+        var addContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        addContent.Children.Add(new FontIcon { Glyph = "\uE710", FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons") });
+        addContent.Children.Add(new TextBlock { Text = "Add App", VerticalAlignment = VerticalAlignment.Center });
+        addBtn.Content = addContent;
+        addBtn.Click += (s, e) =>
+        {
+            _launcherApps.Add(new LauncherApp { Id = "app" + Guid.NewGuid().ToString("N")[..8], DisplayName = "New App", Glyph = "\uE713", Command = "", IsVisible = true });
+            Rebuild();
+        };
+        panel.Children.Add(addBtn);
+        dialog.Content = panel;
+
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+        {
+            foreach (var (cb, name, glyph, cmd, args, app) in rows)
+            {
+                app.IsVisible = cb.IsChecked == true;
+                if (!string.IsNullOrWhiteSpace(name.Text))  app.DisplayName = name.Text;
+                if (!string.IsNullOrWhiteSpace(glyph.Text)) app.Glyph = glyph.Text;
+                app.Command   = cmd.Text;
+                app.Arguments = args.Text;
+            }
+            LauncherAppService.SaveApps(_launcherApps);
+
+            // Refresh unified LauncherModule
+            var launcherSlot = App.Modules.Slots.FirstOrDefault(s => s.Module is LauncherModule);
+            if (launcherSlot?.Module is LauncherModule lm)
+            {
+                lm.RefreshButtons();
+            }
+
+            BuildModules(); // Refresh UI
+        }
+        else
+        {
+            LoadLauncherApps();
+        }
+    }
+
+    // =====================================================================
+    //  Fullscreen auto-hide
+    // =====================================================================
+
+    private void CheckFullscreenAndToggleBar()
+    {
+        try
+        {
+            IntPtr fgHwnd = Win32Interop.GetForegroundWindow();
+            if (fgHwnd == IntPtr.Zero || fgHwnd == _barHwnd) { SetBarHidden(false); return; }
+
+            if (!Win32Interop.GetWindowRect(fgHwnd, out Win32Interop.RECT fgRect)) { SetBarHidden(false); return; }
+
+            IntPtr monitor = Win32Interop.MonitorFromWindow(fgHwnd, Win32Interop.MONITOR_DEFAULTTONEAREST);
+            if (monitor == IntPtr.Zero) { SetBarHidden(false); return; }
+
+            var mi = new Win32Interop.MONITORINFO { cbSize = Marshal.SizeOf<Win32Interop.MONITORINFO>() };
+            if (!Win32Interop.GetMonitorInfo(monitor, ref mi)) { SetBarHidden(false); return; }
+
+            bool fs = fgRect.Left <= mi.rcMonitor.Left && fgRect.Top <= mi.rcMonitor.Top
+                   && fgRect.Right >= mi.rcMonitor.Right && fgRect.Bottom >= mi.rcMonitor.Bottom;
+            SetBarHidden(fs);
+        }
+        catch (Exception ex) { SafeLog($"[{DateTime.Now:HH:mm:ss.fff}] CheckFullscreen error: {ex.Message}"); }
+    }
+
+    private void SetBarHidden(bool hide)
+    {
+        if (hide == _isHiddenForFullscreen) return;
+        _isHiddenForFullscreen = hide;
+        if (_barHwnd == IntPtr.Zero) return;
+        if (hide)
+            Win32Interop.SetWindowPos(_barHwnd, IntPtr.Zero, 0, 0, 0, 0,
+                Win32Interop.SWP_NOMOVE | Win32Interop.SWP_NOSIZE | Win32Interop.SWP_NOZORDER | Win32Interop.SWP_NOACTIVATE | Win32Interop.SWP_HIDEWINDOW);
+        else
+            Win32Interop.SetWindowPos(_barHwnd, IntPtr.Zero, 0, 0, 0, 0,
+                Win32Interop.SWP_NOMOVE | Win32Interop.SWP_NOSIZE | Win32Interop.SWP_NOZORDER | Win32Interop.SWP_NOACTIVATE | Win32Interop.SWP_SHOWWINDOW | Win32Interop.SWP_NOOWNERZORDER);
+    }
+}
